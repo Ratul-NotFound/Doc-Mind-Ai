@@ -1,13 +1,18 @@
 /* ═══════════════════════════════════════════════════════════════════
    DocMind — app.js
    Full chat flow: upload → embed → retrieve → stream → display
+   Features: session persistence, multi-turn memory, copy to clipboard,
+   dynamic host detection, and hardened markdown rendering.
 ═══════════════════════════════════════════════════════════════════ */
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = window.location.origin.startsWith("http")
+  ? window.location.origin
+  : "http://localhost:8000";
 
 // ── State ──────────────────────────────────────────────────────────
-let sessionId  = null;
+let sessionId   = null;
 let isStreaming = false;
+let chatHistory = []; // list of {role: 'user' | 'assistant', content: string}
 
 // ── DOM refs ───────────────────────────────────────────────────────
 const dropZone        = document.getElementById("dropZone");
@@ -49,6 +54,32 @@ themeToggle.addEventListener("click", () => {
 
 
 // ═══════════════════════════════════════════════════════════════════
+// Initialization & Session Restore
+// ═══════════════════════════════════════════════════════════════════
+window.addEventListener("DOMContentLoaded", async () => {
+  const savedSession = localStorage.getItem("docmind_active_session");
+  if (savedSession) {
+    try {
+      const sessionData = JSON.parse(savedSession);
+      if (sessionData && sessionData.session_id) {
+        // Verify session still exists on backend
+        const res = await fetch(`${API_BASE}/session/${sessionData.session_id}`);
+        if (res.ok) {
+          const verifiedData = await res.json();
+          activateSession(verifiedData, false);
+          showToast(`Restored session: ${verifiedData.filename || 'PDF Document'}`, "info");
+        } else {
+          localStorage.removeItem("docmind_active_session");
+        }
+      }
+    } catch (e) {
+      console.warn("Could not restore session:", e);
+    }
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
 // File Upload — Drag & Drop + Click
 // ═══════════════════════════════════════════════════════════════════
 dropZone.addEventListener("click", () => fileInput.click());
@@ -62,7 +93,7 @@ dropZone.addEventListener("drop", e => {
   e.preventDefault();
   dropZone.classList.remove("dragover");
   const file = e.dataTransfer.files[0];
-  if (file && file.type === "application/pdf") {
+  if (file && (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))) {
     handleFile(file);
   } else {
     showToast("Only PDF files are supported.", "error");
@@ -71,23 +102,23 @@ dropZone.addEventListener("drop", e => {
 
 async function handleFile(file) {
   if (!file.name.toLowerCase().endsWith(".pdf")) {
-    showToast("Only PDF files are supported.", "error"); return;
+    showToast("Only PDF files are supported.", "error");
+    return;
   }
 
-  // Show progress
-  showProgress("Uploading PDF…", 10);
+  showProgress("Uploading PDF…", 15);
 
   const formData = new FormData();
   formData.append("file", file);
 
   try {
-    showProgress("Extracting text…", 35);
+    showProgress("Extracting & parsing text…", 40);
     const res = await fetch(`${API_BASE}/upload`, { method: "POST", body: formData });
     
-    showProgress("Building vector index…", 70);
+    showProgress("Building semantic index…", 75);
 
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({ detail: "Upload failed" }));
       throw new Error(err.detail || "Upload failed");
     }
 
@@ -96,8 +127,8 @@ async function handleFile(file) {
 
     setTimeout(() => {
       hideProgress();
-      activateSession(data);
-    }, 500);
+      activateSession(data, true);
+    }, 400);
 
     showToast(`✓ ${file.name} indexed (${data.chunks} chunks)`, "success");
 
@@ -118,11 +149,12 @@ function hideProgress() {
   progressBar.style.width = "0%";
 }
 
-function activateSession(data) {
+function activateSession(data, isNew = true) {
   sessionId = data.session_id;
+  localStorage.setItem("docmind_active_session", JSON.stringify(data));
 
-  sessionFilename.textContent = data.filename;
-  sessionStats.textContent    = `${data.pages} page${data.pages !== 1 ? "s" : ""} · ${data.chunks} chunks indexed`;
+  sessionFilename.textContent = data.filename || "document.pdf";
+  sessionStats.textContent    = `${data.pages || 0} page${data.pages !== 1 ? "s" : ""} · ${data.chunks || 0} chunks indexed`;
 
   sessionSection.hidden    = false;
   suggestionsSection.hidden = false;
@@ -132,19 +164,28 @@ function activateSession(data) {
   questionInput.placeholder = "Ask anything about the document…";
   updateSendBtn();
 
-  // Switch to chat view
-  emptyState.hidden  = false; // keep showing until first message
+  if (isNew) {
+    chatHistory = [];
+    messages.innerHTML = "";
+    messages.hidden = true;
+    emptyState.hidden = false;
+    sourcesPanel.hidden = true;
+  }
 }
 
 // Clear session
 clearSessionBtn.addEventListener("click", async () => {
   if (!sessionId) return;
-  await fetch(`${API_BASE}/session/${sessionId}`, { method: "DELETE" }).catch(() => {});
+  const currentId = sessionId;
   resetState();
+  localStorage.removeItem("docmind_active_session");
+  await fetch(`${API_BASE}/session/${currentId}`, { method: "DELETE" }).catch(() => {});
+  showToast("Session cleared. You can now upload another PDF.", "info");
 });
 
 function resetState() {
   sessionId = null;
+  chatHistory = [];
   sessionSection.hidden    = true;
   suggestionsSection.hidden = true;
   emptyState.hidden        = false;
@@ -165,7 +206,7 @@ function resetState() {
 suggestions.querySelectorAll(".suggestion-chip").forEach(chip => {
   chip.addEventListener("click", () => {
     if (!sessionId || isStreaming) return;
-    questionInput.value = chip.textContent;
+    questionInput.value = chip.textContent.trim();
     autoResizeTextarea();
     updateSendBtn();
     sendQuestion();
@@ -217,7 +258,7 @@ async function sendQuestion() {
   questionInput.value = "";
   questionInput.style.height = "auto";
 
-  // Show chat
+  // Show chat container
   emptyState.hidden = true;
   messages.hidden   = false;
 
@@ -227,12 +268,19 @@ async function sendQuestion() {
   // Append AI placeholder with thinking animation
   const aiMsgEl = appendMessage("ai", "", true);
   const aiBubble = aiMsgEl.querySelector(".msg-bubble");
+  const aiContent = aiMsgEl.querySelector(".msg-content");
 
   try {
+    const payload = {
+      session_id: sessionId,
+      question: question,
+      history: chatHistory.slice(-4), // send last 2 conversation turns
+    };
+
     const res = await fetch(`${API_BASE}/ask/sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, question }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
@@ -241,17 +289,24 @@ async function sendQuestion() {
     }
 
     const data = await res.json();
-    const fullText = data.answer || "";
+    const fullText = data.answer || "No response generated.";
     const sources  = data.sources || [];
 
-    // Typewriter animation — makes it feel like streaming
+    // Typewriter animation
     await typewriterEffect(aiBubble, fullText);
+
+    // Save turn into conversation history
+    chatHistory.push({ role: "user", content: question });
+    chatHistory.push({ role: "assistant", content: fullText });
+
+    // Add Copy button below answer
+    addMessageActions(aiContent, fullText);
 
     if (sources.length > 0) renderSources(sources);
     scrollToBottom();
 
   } catch (err) {
-    aiBubble.innerHTML = `<span style="color:var(--danger)">⚠ ${err.message}</span>`;
+    aiBubble.innerHTML = `<span style="color:var(--danger)">⚠ ${escapeHtml(err.message)}</span>`;
   } finally {
     isStreaming = false;
     sendBtn.classList.remove("loading");
@@ -260,7 +315,7 @@ async function sendQuestion() {
   }
 }
 
-// Typewriter effect — renders text word-by-word for a streaming feel
+// Typewriter effect — renders text word-by-word
 async function typewriterEffect(el, fullText) {
   const words = fullText.split(" ");
   let built = "";
@@ -268,14 +323,47 @@ async function typewriterEffect(el, fullText) {
     built += (i > 0 ? " " : "") + words[i];
     el.innerHTML = renderMarkdown(built) + '<span class="cursor"></span>';
     scrollToBottom();
-    // Small random delay per word: 12–28ms feels natural
-    await sleep(12 + Math.random() * 16);
+    await sleep(10 + Math.random() * 14);
   }
   el.innerHTML = renderMarkdown(fullText);
 }
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function addMessageActions(contentEl, text) {
+  const actions = document.createElement("div");
+  actions.className = "msg-actions";
+
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "msg-action-btn";
+  copyBtn.innerHTML = `
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+    </svg> Copy
+  `;
+
+  copyBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      copyBtn.innerHTML = `✓ Copied!`;
+      setTimeout(() => {
+        copyBtn.innerHTML = `
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg> Copy
+        `;
+      }, 2000);
+    } catch (e) {
+      showToast("Could not copy to clipboard", "error");
+    }
+  });
+
+  actions.appendChild(copyBtn);
+  contentEl.appendChild(actions);
 }
 
 
@@ -322,7 +410,7 @@ function scrollToBottom() {
 // ═══════════════════════════════════════════════════════════════════
 function renderSources(sources) {
   sourcesPanel.hidden = false;
-  sourcesCount.textContent = `${sources.length} source${sources.length !== 1 ? "s" : ""} used`;
+  sourcesCount.textContent = `${sources.length} source excerpt${sources.length !== 1 ? "s" : ""} used`;
 
   sourcesList.innerHTML = sources
     .map(s => `
@@ -341,28 +429,63 @@ sourcesToggle.addEventListener("click", () => {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// Markdown Renderer (lightweight, no library needed)
+// Markdown Renderer (robust, sanitizing, multi-block parser)
 // ═══════════════════════════════════════════════════════════════════
-function renderMarkdown(text) {
-  if (!text) return "";
-  return text
-    // Bold **text**
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    // Italic *text*
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    // Inline code `code`
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    // Bullet lists
-    .replace(/^[\s]*[-•]\s+(.+)/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>)/gs, "<ul>$1</ul>")
-    // Numbered lists
-    .replace(/^\d+\.\s+(.+)/gm, "<li>$1</li>")
-    // Paragraphs (double newline)
-    .replace(/\n\n+/g, "</p><p>")
-    // Single newlines
-    .replace(/\n/g, "<br>")
-    // Wrap in paragraph
-    .replace(/^(.+)/, "<p>$1</p>");
+function renderMarkdown(raw) {
+  if (!raw) return "";
+
+  // 1. First escape HTML special chars to prevent XSS
+  let text = escapeHtml(raw);
+
+  // 2. Fenced code blocks ```lang ... ```
+  text = text.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
+  });
+
+  // 3. Inline code `code`
+  text = text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+
+  // 4. Headings
+  text = text.replace(/^### (.*$)/gim, "<h3>$1</h3>");
+  text = text.replace(/^## (.*$)/gim, "<h2>$1</h2>");
+  text = text.replace(/^# (.*$)/gim, "<h1>$1</h1>");
+
+  // 5. Bold & Italic
+  text = text.replace(/\*\*\*(.*?)\*\*\*/g, "<strong><em>$1</em></strong>");
+  text = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  text = text.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+
+  // 6. Split into blocks separated by double newlines
+  const blocks = text.split(/\n{2,}/);
+  const formattedBlocks = blocks.map(block => {
+    block = block.trim();
+    if (!block) return "";
+
+    // If block is already a tag like <pre> or <h*>, don't wrap in <p>
+    if (/^<(pre|h1|h2|h3|table)/i.test(block)) {
+      return block;
+    }
+
+    // Check for bullet lists (lines starting with - or *)
+    const lines = block.split("\n");
+    const isBulletList = lines.every(l => /^[\s]*[-•*]\s+/.test(l));
+    if (isBulletList && lines.length > 0) {
+      const items = lines.map(l => `<li>${l.replace(/^[\s]*[-•*]\s+/, "")}</li>`).join("");
+      return `<ul>${items}</ul>`;
+    }
+
+    // Check for numbered lists (lines starting with 1. 2. etc)
+    const isNumberedList = lines.every(l => /^[\s]*\d+\.\s+/.test(l));
+    if (isNumberedList && lines.length > 0) {
+      const items = lines.map(l => `<li>${l.replace(/^[\s]*\d+\.\s+/, "")}</li>`).join("");
+      return `<ol>${items}</ol>`;
+    }
+
+    // Standard paragraph with soft breaks
+    return `<p>${lines.join("<br>")}</p>`;
+  });
+
+  return formattedBlocks.join("");
 }
 
 function escapeHtml(str) {

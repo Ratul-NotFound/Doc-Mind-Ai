@@ -30,10 +30,25 @@ class Chunk:
 
 # ─────────────────────────────────────────────────────────────────────────────
 def _clean_text(text: str) -> str:
-    """Remove excessive whitespace and fix common PDF artifacts."""
+    """Remove excessive whitespace, fix ligatures and common PDF artifacts."""
+    if not text:
+        return ""
+    # Normalize common Unicode ligatures
+    ligatures = {
+        "\ufb01": "fi",
+        "\ufb02": "fl",
+        "\ufb00": "ff",
+        "\ufb03": "ffi",
+        "\ufb04": "ffl",
+        "\u00ad": "",   # soft hyphen
+    }
+    for lig, repl in ligatures.items():
+        text = text.replace(lig, repl)
+
     text = re.sub(r"[ \t]+", " ", text)              # collapse horizontal whitespace
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)      # fix hyphenated line breaks
-    text = re.sub(r"\n{3,}", "\n\n", text)             # max 2 consecutive newlines
+    text = re.sub(r"\r\n|\r", "\n", text)             # normalize newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)            # max 2 consecutive newlines
     return text.strip()
 
 
@@ -42,15 +57,18 @@ def _split_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP)
     Recursive character-based splitter.
     Priority: paragraph → sentence → word boundaries.
     """
-    separators = ["\n\n", "\n", ". ", "? ", "! ", ", ", " ", ""]
+    if not text:
+        return []
+
+    separators = ["\n\n", "\n", ". ", "? ", "! ", "; ", ", ", " ", ""]
 
     if len(text) <= size:
         return [text] if text.strip() else []
 
     for sep in separators:
-        if sep not in text:
+        if sep and sep not in text:
             continue
-        parts = text.split(sep)
+        parts = text.split(sep) if sep else list(text)
         chunks: List[str] = []
         current = ""
 
@@ -79,26 +97,51 @@ def _split_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP)
         return chunks
 
     # Fallback: hard split
-    return [text[i : i + size] for i in range(0, len(text), size - overlap)]
+    step = max(1, size - overlap)
+    return [text[i : i + size] for i in range(0, len(text), step)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def _check_encrypted(pdf_path: Path) -> None:
+    """Check if the PDF is encrypted/password-protected."""
+    try:
+        reader = PdfReader(str(pdf_path))
+        if reader.is_encrypted:
+            try:
+                # Try decrypting with empty password
+                reader.decrypt("")
+            except Exception:
+                raise ValueError("This PDF is password-protected. Please upload an unprotected PDF.")
+    except ValueError:
+        raise
+    except Exception:
+        pass
+
+
 def _extract_with_pdfplumber(pdf_path: Path) -> List[tuple[int, str]]:
-    """Primary extractor using pdfplumber (better layout handling)."""
+    """Primary extractor using pdfplumber with per-page error isolation."""
     pages = []
     with pdfplumber.open(str(pdf_path)) as pdf:
         for i, page in enumerate(pdf.pages):
-            text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+            try:
+                text = page.extract_text(x_tolerance=2, y_tolerance=2) or ""
+            except Exception as e:
+                print(f"[PDF] Page {i+1} pdfplumber error ({e}), trying fallback")
+                text = ""
             pages.append((i + 1, text))
     return pages
 
 
 def _extract_with_pypdf(pdf_path: Path) -> List[tuple[int, str]]:
-    """Fallback extractor using pypdf."""
+    """Fallback extractor using pypdf with per-page error isolation."""
     pages = []
     reader = PdfReader(str(pdf_path))
     for i, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
+        try:
+            text = page.extract_text() or ""
+        except Exception as e:
+            print(f"[PDF] Page {i+1} pypdf error: {e}")
+            text = ""
         pages.append((i + 1, text))
     return pages
 
@@ -110,24 +153,37 @@ def extract_chunks(pdf_path: str | Path) -> List[Chunk]:
     cleans it, splits into chunks, returns Chunk objects with page metadata.
     """
     pdf_path = Path(pdf_path)
+    _check_encrypted(pdf_path)
+
     all_chunks: List[Chunk] = []
     chunk_index = 0
 
-    # Try pdfplumber first, fall back to pypdf
+    # Try pdfplumber first, fall back to pypdf if plumber fails completely
+    pages: List[tuple[int, str]] = []
     try:
         pages = _extract_with_pdfplumber(pdf_path)
     except Exception as e:
         print(f"[PDF] pdfplumber failed ({e}), falling back to pypdf")
         pages = _extract_with_pypdf(pdf_path)
 
+    # If all pages extracted via plumber were empty, attempt pypdf as secondary
+    total_extracted_len = sum(len(text.strip()) for _, text in pages)
+    if total_extracted_len == 0:
+        try:
+            pypdf_pages = _extract_with_pypdf(pdf_path)
+            if sum(len(t.strip()) for _, t in pypdf_pages) > 0:
+                pages = pypdf_pages
+        except Exception:
+            pass
+
     for page_num, raw_text in pages:
         clean = _clean_text(raw_text)
-        if not clean or len(clean) < 20:
+        if not clean or len(clean) < 15:
             continue
 
         page_chunks = _split_text(clean)
         for text in page_chunks:
-            if len(text.strip()) < 30:   # skip tiny fragments
+            if len(text.strip()) < 20:   # skip tiny fragments
                 continue
             all_chunks.append(Chunk(
                 text=text.strip(),

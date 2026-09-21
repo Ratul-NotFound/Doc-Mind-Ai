@@ -7,6 +7,16 @@ load_dotenv()
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL: str = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
 
+# Fallback models in priority order if the primary model is unavailable or rate-limited
+GROQ_FALLBACK_MODELS: list[str] = [
+    GROQ_MODEL,
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "llama3-8b-8192",
+]
+
 # ── Embedding Model (runs locally, 100% free) ────────────────────────────────
 EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"   # 22M params, ~80MB download once
 
