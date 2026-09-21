@@ -7,15 +7,25 @@ page-number metadata.
 """
 
 from __future__ import annotations
+import os
+import sys
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
+# Ensure backend directory is in sys.path
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
 import pdfplumber
 from pypdf import PdfReader
 
-from config import CHUNK_SIZE, CHUNK_OVERLAP
+try:
+    from config import CHUNK_SIZE, CHUNK_OVERLAP
+except ImportError:
+    from backend.config import CHUNK_SIZE, CHUNK_OVERLAP
 
 
 # ─────────────────────────────────────────────────────────────────────────────

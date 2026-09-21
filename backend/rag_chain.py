@@ -7,14 +7,27 @@ Supports automatic multi-model fallback and multi-turn context.
 """
 
 from __future__ import annotations
+import os
+import sys
 import asyncio
+from pathlib import Path
 from typing import AsyncGenerator, List, Tuple, Optional
+
+# Ensure backend directory is in sys.path
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 from groq import Groq
 
-from config import GROQ_API_KEY, GROQ_MODEL, GROQ_FALLBACK_MODELS, SYSTEM_PROMPT, TOP_K
-from pdf_processor import Chunk
-from vector_store import VectorStore
+try:
+    from config import GROQ_API_KEY, GROQ_MODEL, GROQ_FALLBACK_MODELS, SYSTEM_PROMPT, TOP_K
+    from pdf_processor import Chunk
+    from vector_store import VectorStore
+except ImportError:
+    from backend.config import GROQ_API_KEY, GROQ_MODEL, GROQ_FALLBACK_MODELS, SYSTEM_PROMPT, TOP_K
+    from backend.pdf_processor import Chunk
+    from backend.vector_store import VectorStore
 
 
 def _build_context(chunks_with_scores: List[Tuple[Chunk, float]]) -> str:

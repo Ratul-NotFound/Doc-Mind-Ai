@@ -6,17 +6,29 @@ Each session gets its own index saved to disk.
 """
 
 from __future__ import annotations
+import os
+import sys
 import json
 import pickle
 from pathlib import Path
 from typing import List, Tuple
 
+# Ensure backend directory is in sys.path
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
+
 import faiss
 import numpy as np
 
-from config import INDEX_DIR, TOP_K, MMR_LAMBDA
-from embedder import embed_texts, embed_query
-from pdf_processor import Chunk
+try:
+    from config import INDEX_DIR, TOP_K, MMR_LAMBDA
+    from embedder import embed_texts, embed_query
+    from pdf_processor import Chunk
+except ImportError:
+    from backend.config import INDEX_DIR, TOP_K, MMR_LAMBDA
+    from backend.embedder import embed_texts, embed_query
+    from backend.pdf_processor import Chunk
 
 
 class VectorStore:

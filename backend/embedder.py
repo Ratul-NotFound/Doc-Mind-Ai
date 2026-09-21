@@ -6,13 +6,24 @@ Model is cached in memory after first load — zero API cost.
 """
 
 from __future__ import annotations
+import os
+import sys
 from functools import lru_cache
+from pathlib import Path
 from typing import List
+
+# Ensure backend directory is in sys.path
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from config import EMBEDDING_MODEL
+try:
+    from config import EMBEDDING_MODEL
+except ImportError:
+    from backend.config import EMBEDDING_MODEL
 
 
 @lru_cache(maxsize=1)

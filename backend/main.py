@@ -13,9 +13,15 @@ Endpoints:
 
 from __future__ import annotations
 import os
+import sys
 import uuid
 import json
 from pathlib import Path
+
+# Ensure backend directory is in sys.path regardless of execution root
+_BACKEND_DIR = Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,10 +29,16 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import UPLOAD_DIR, INDEX_DIR
-from pdf_processor import extract_chunks, get_pdf_info
-from vector_store import VectorStore
-from rag_chain import RAGChain
+try:
+    from config import UPLOAD_DIR, INDEX_DIR
+    from pdf_processor import extract_chunks, get_pdf_info
+    from vector_store import VectorStore
+    from rag_chain import RAGChain
+except ImportError:
+    from backend.config import UPLOAD_DIR, INDEX_DIR
+    from backend.pdf_processor import extract_chunks, get_pdf_info
+    from backend.vector_store import VectorStore
+    from backend.rag_chain import RAGChain
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
