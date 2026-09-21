@@ -18,7 +18,11 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 import numpy as np
+import torch
 from sentence_transformers import SentenceTransformer
+
+# Limit PyTorch CPU threads to prevent memory/CPU spikes on 512MB instances
+torch.set_num_threads(2)
 
 try:
     from config import EMBEDDING_MODEL
@@ -28,11 +32,19 @@ except ImportError:
 
 @lru_cache(maxsize=1)
 def _get_model() -> SentenceTransformer:
-    """Load the embedding model once and keep it in memory."""
-    print(f"[Embedder] Loading model: {EMBEDDING_MODEL} (first time only)...")
-    model = SentenceTransformer(EMBEDDING_MODEL)
+    """Load the embedding model once and keep it in memory on CPU."""
+    print(f"[Embedder] Loading model: {EMBEDDING_MODEL} (CPU mode)...")
+    model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
     print(f"[Embedder] Model ready.")
     return model
+
+
+def warmup_embedder() -> None:
+    """Warm up the embedding model during app startup."""
+    try:
+        _ = _get_model()
+    except Exception as e:
+        print(f"[Embedder] Warmup failed (will retry on first query): {e}")
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:

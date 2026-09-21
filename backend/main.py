@@ -34,11 +34,13 @@ try:
     from pdf_processor import extract_chunks, get_pdf_info
     from vector_store import VectorStore
     from rag_chain import RAGChain
+    from embedder import warmup_embedder
 except ImportError:
     from backend.config import UPLOAD_DIR, INDEX_DIR
     from backend.pdf_processor import extract_chunks, get_pdf_info
     from backend.vector_store import VectorStore
     from backend.rag_chain import RAGChain
+    from backend.embedder import warmup_embedder
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -46,6 +48,14 @@ app = FastAPI(
     description="Upload any PDF and ask questions — powered by local embeddings + Groq LLM",
     version="1.0.0",
 )
+
+@app.on_event("startup")
+async def on_startup():
+    """Warm up embedding model on boot so first upload is instant."""
+    try:
+        warmup_embedder()
+    except Exception as e:
+        print(f"[Startup] Warmup notice: {e}")
 
 app.add_middleware(
     CORSMiddleware,

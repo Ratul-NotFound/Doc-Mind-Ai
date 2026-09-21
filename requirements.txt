@@ -1,3 +1,6 @@
+# PyTorch CPU Wheels index for fast cloud builds
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # Core API
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
@@ -9,14 +12,14 @@ python-dotenv==1.0.1
 pypdf==4.3.1
 pdfplumber==0.11.4
 
-# Local Embeddings — pinned to avoid transformers conflicts
+# Local Embeddings
 sentence-transformers>=2.7.0
 transformers>=4.36.0,<4.46.0
 tokenizers>=0.15.0,<0.21.0
 huggingface-hub>=0.20.0,<0.30.0
 
-# PyTorch (CPU only — smaller, faster install)
-torch>=2.6.0
+# PyTorch (CPU only — ~150MB, zero CUDA bloat)
+torch>=2.2.0
 
 # Vector Store
 faiss-cpu>=1.9.0
