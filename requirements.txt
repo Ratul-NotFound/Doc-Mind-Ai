@@ -1,0 +1,28 @@
+# Core API
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+pydantic>=2.9.0
+python-dotenv==1.0.1
+
+# PDF Processing (pure Python, no compilation needed)
+pypdf==4.3.1
+pdfplumber==0.11.4
+
+# Local Embeddings — pinned to avoid transformers conflicts
+sentence-transformers>=2.7.0
+transformers>=4.36.0,<4.46.0
+tokenizers>=0.15.0,<0.21.0
+huggingface-hub>=0.20.0,<0.30.0
+
+# PyTorch (CPU only — smaller, faster install)
+torch>=2.6.0
+
+# Vector Store
+faiss-cpu>=1.9.0
+
+# LLM Client
+groq>=0.13.0
+
+# Utilities
+numpy>=1.26.0

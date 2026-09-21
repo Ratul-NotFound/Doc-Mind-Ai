@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Environment & Secrets (NEVER COMMIT)
+.env
+*.env
+**/.env
+.env.*
+!.env.example
+
+# Uploads & Indexes (user data)
+backend/uploads/
+backend/indexes/
+uploads/
+indexes/
+*.faiss
+*.pkl
+
+# Models cache
+~/.cache/huggingface/
+*.bin
+*.safetensors
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+*.egg-info/
