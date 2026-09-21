@@ -1,8 +1,8 @@
 /* ═══════════════════════════════════════════════════════════════════
    DocMind — app.js
    Full chat flow: upload → embed → retrieve → stream → display
-   Features: session persistence, multi-turn memory, copy to clipboard,
-   dynamic host detection, and hardened markdown rendering.
+   Modern Standard AI UI: Collapsible Sidebar, Expansive Chat Stream,
+   Persistent Sessions, Multi-Turn Context, and 1-Click Copy.
 ═══════════════════════════════════════════════════════════════════ */
 
 const API_BASE = window.location.origin.startsWith("http")
@@ -12,9 +12,14 @@ const API_BASE = window.location.origin.startsWith("http")
 // ── State ──────────────────────────────────────────────────────────
 let sessionId   = null;
 let isStreaming = false;
-let chatHistory = []; // list of {role: 'user' | 'assistant', content: string}
+let chatHistory = []; // {role: 'user' | 'assistant', content: string}
 
 // ── DOM refs ───────────────────────────────────────────────────────
+const sidebar         = document.getElementById("sidebar");
+const sidebarToggle   = document.getElementById("sidebarToggle");
+const sidebarCloseBtn = document.getElementById("sidebarCloseBtn");
+const sidebarOverlay  = document.getElementById("sidebarOverlay");
+
 const dropZone        = document.getElementById("dropZone");
 const fileInput       = document.getElementById("fileInput");
 const uploadProgress  = document.getElementById("uploadProgress");
@@ -27,7 +32,9 @@ const suggestionsSection = document.getElementById("suggestionsSection");
 const clearSessionBtn = document.getElementById("clearSession");
 const suggestions     = document.getElementById("suggestions");
 
+const chatScrollContainer = document.getElementById("chatScrollContainer");
 const emptyState      = document.getElementById("emptyState");
+const emptyUploadTrigger = document.getElementById("emptyUploadTrigger");
 const messages        = document.getElementById("messages");
 const sourcesPanel    = document.getElementById("sourcesPanel");
 const sourcesToggle   = document.getElementById("sourcesToggle");
@@ -36,6 +43,7 @@ const sourcesList     = document.getElementById("sourcesList");
 
 const questionInput   = document.getElementById("questionInput");
 const sendBtn         = document.getElementById("sendBtn");
+const clearChatBtn    = document.getElementById("clearChatBtn");
 const themeToggle     = document.getElementById("themeToggle");
 
 
@@ -54,7 +62,33 @@ themeToggle.addEventListener("click", () => {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// Initialization & Session Restore
+// Sidebar Toggle (Standard Collapsible Layout)
+// ═══════════════════════════════════════════════════════════════════
+function toggleSidebar() {
+  const isCollapsed = sidebar.classList.toggle("collapsed");
+  sidebarOverlay.classList.toggle("open", !isCollapsed && window.innerWidth <= 768);
+  localStorage.setItem("docmind-sidebar", isCollapsed ? "collapsed" : "open");
+}
+
+function closeMobileSidebar() {
+  sidebar.classList.add("collapsed");
+  sidebarOverlay.classList.remove("open");
+}
+
+sidebarToggle.addEventListener("click", toggleSidebar);
+if (sidebarCloseBtn) sidebarCloseBtn.addEventListener("click", closeMobileSidebar);
+if (sidebarOverlay) sidebarOverlay.addEventListener("click", closeMobileSidebar);
+
+// Restore sidebar state
+if (window.innerWidth <= 768) {
+  sidebar.classList.add("collapsed");
+} else if (localStorage.getItem("docmind-sidebar") === "collapsed") {
+  sidebar.classList.add("collapsed");
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+// Session Restore
 // ═══════════════════════════════════════════════════════════════════
 window.addEventListener("DOMContentLoaded", async () => {
   const savedSession = localStorage.getItem("docmind_active_session");
@@ -62,12 +96,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     try {
       const sessionData = JSON.parse(savedSession);
       if (sessionData && sessionData.session_id) {
-        // Verify session still exists on backend
         const res = await fetch(`${API_BASE}/session/${sessionData.session_id}`);
         if (res.ok) {
           const verifiedData = await res.json();
           activateSession(verifiedData, false);
-          showToast(`Restored session: ${verifiedData.filename || 'PDF Document'}`, "info");
+          showToast(`Restored: ${verifiedData.filename || 'PDF Document'}`, "info");
         } else {
           localStorage.removeItem("docmind_active_session");
         }
@@ -80,9 +113,11 @@ window.addEventListener("DOMContentLoaded", async () => {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// File Upload — Drag & Drop + Click
+// File Upload
 // ═══════════════════════════════════════════════════════════════════
 dropZone.addEventListener("click", () => fileInput.click());
+if (emptyUploadTrigger) emptyUploadTrigger.addEventListener("click", () => fileInput.click());
+
 fileInput.addEventListener("change", () => {
   if (fileInput.files[0]) handleFile(fileInput.files[0]);
 });
@@ -115,7 +150,7 @@ async function handleFile(file) {
     showProgress("Extracting & parsing text…", 40);
     const res = await fetch(`${API_BASE}/upload`, { method: "POST", body: formData });
     
-    showProgress("Building semantic index…", 75);
+    showProgress("Building FAISS semantic index…", 75);
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: "Upload failed" }));
@@ -156,60 +191,71 @@ function activateSession(data, isNew = true) {
   sessionFilename.textContent = data.filename || "document.pdf";
   sessionStats.textContent    = `${data.pages || 0} page${data.pages !== 1 ? "s" : ""} · ${data.chunks || 0} chunks indexed`;
 
-  sessionSection.hidden    = false;
+  sessionSection.hidden     = false;
   suggestionsSection.hidden = false;
 
-  // Enable chat
   questionInput.disabled    = false;
-  questionInput.placeholder = "Ask anything about the document…";
+  questionInput.placeholder = "Ask anything about this document…";
   updateSendBtn();
 
   if (isNew) {
-    chatHistory = [];
-    messages.innerHTML = "";
-    messages.hidden = true;
-    emptyState.hidden = false;
-    sourcesPanel.hidden = true;
+    clearChat();
   }
 }
 
-// Clear session
 clearSessionBtn.addEventListener("click", async () => {
   if (!sessionId) return;
   const currentId = sessionId;
   resetState();
   localStorage.removeItem("docmind_active_session");
   await fetch(`${API_BASE}/session/${currentId}`, { method: "DELETE" }).catch(() => {});
-  showToast("Session cleared. You can now upload another PDF.", "info");
+  showToast("Document session removed.", "info");
 });
 
 function resetState() {
   sessionId = null;
   chatHistory = [];
-  sessionSection.hidden    = true;
+  sessionSection.hidden     = true;
   suggestionsSection.hidden = true;
-  emptyState.hidden        = false;
-  messages.hidden          = true;
-  sourcesPanel.hidden      = true;
-  messages.innerHTML       = "";
-  questionInput.disabled   = true;
-  questionInput.placeholder = "Upload a PDF first to start asking questions…";
-  questionInput.value      = "";
-  fileInput.value          = "";
+  clearChat();
+  questionInput.disabled    = true;
+  questionInput.placeholder = "Upload a PDF to begin asking questions…";
+  questionInput.value       = "";
+  fileInput.value           = "";
   updateSendBtn();
 }
 
 
 // ═══════════════════════════════════════════════════════════════════
-// Suggestion Chips
+// Clear Chat Action
+// ═══════════════════════════════════════════════════════════════════
+function clearChat() {
+  chatHistory = [];
+  messages.innerHTML = "";
+  messages.hidden = true;
+  emptyState.hidden = false;
+  sourcesPanel.hidden = true;
+}
+
+clearChatBtn.addEventListener("click", () => {
+  if (messages.children.length > 0) {
+    clearChat();
+    showToast("Chat history cleared.", "info");
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════════
+// Suggestions
 // ═══════════════════════════════════════════════════════════════════
 suggestions.querySelectorAll(".suggestion-chip").forEach(chip => {
   chip.addEventListener("click", () => {
     if (!sessionId || isStreaming) return;
-    questionInput.value = chip.textContent.trim();
+    questionInput.value = chip.textContent.replace(/^[✨📊🔍📋]\s*/, "").trim();
     autoResizeTextarea();
     updateSendBtn();
     sendQuestion();
+    if (window.innerWidth <= 768) closeMobileSidebar();
   });
 });
 
@@ -233,7 +279,7 @@ sendBtn.addEventListener("click", sendQuestion);
 
 function autoResizeTextarea() {
   questionInput.style.height = "auto";
-  questionInput.style.height = Math.min(questionInput.scrollHeight, 160) + "px";
+  questionInput.style.height = Math.min(questionInput.scrollHeight, 180) + "px";
 }
 
 function updateSendBtn() {
@@ -244,7 +290,7 @@ function updateSendBtn() {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// Send Question → Get Answer (JSON + client-side typewriter)
+// Send Question & Streaming Typewriter
 // ═══════════════════════════════════════════════════════════════════
 async function sendQuestion() {
   const question = questionInput.value.trim();
@@ -252,20 +298,15 @@ async function sendQuestion() {
 
   isStreaming = true;
   updateSendBtn();
-  sendBtn.classList.add("loading");
 
-  // Clear input
   questionInput.value = "";
   questionInput.style.height = "auto";
 
-  // Show chat container
   emptyState.hidden = true;
   messages.hidden   = false;
 
-  // Append user message
   appendMessage("user", question);
 
-  // Append AI placeholder with thinking animation
   const aiMsgEl = appendMessage("ai", "", true);
   const aiBubble = aiMsgEl.querySelector(".msg-bubble");
   const aiContent = aiMsgEl.querySelector(".msg-content");
@@ -274,7 +315,7 @@ async function sendQuestion() {
     const payload = {
       session_id: sessionId,
       question: question,
-      history: chatHistory.slice(-4), // send last 2 conversation turns
+      history: chatHistory.slice(-4),
     };
 
     const res = await fetch(`${API_BASE}/ask/sync`, {
@@ -292,14 +333,11 @@ async function sendQuestion() {
     const fullText = data.answer || "No response generated.";
     const sources  = data.sources || [];
 
-    // Typewriter animation
     await typewriterEffect(aiBubble, fullText);
 
-    // Save turn into conversation history
     chatHistory.push({ role: "user", content: question });
     chatHistory.push({ role: "assistant", content: fullText });
 
-    // Add Copy button below answer
     addMessageActions(aiContent, fullText);
 
     if (sources.length > 0) renderSources(sources);
@@ -309,13 +347,11 @@ async function sendQuestion() {
     aiBubble.innerHTML = `<span style="color:var(--danger)">⚠ ${escapeHtml(err.message)}</span>`;
   } finally {
     isStreaming = false;
-    sendBtn.classList.remove("loading");
     updateSendBtn();
     questionInput.focus();
   }
 }
 
-// Typewriter effect — renders text word-by-word
 async function typewriterEffect(el, fullText) {
   const words = fullText.split(" ");
   let built = "";
@@ -323,7 +359,7 @@ async function typewriterEffect(el, fullText) {
     built += (i > 0 ? " " : "") + words[i];
     el.innerHTML = renderMarkdown(built) + '<span class="cursor"></span>';
     scrollToBottom();
-    await sleep(10 + Math.random() * 14);
+    await sleep(8 + Math.random() * 12);
   }
   el.innerHTML = renderMarkdown(fullText);
 }
@@ -393,7 +429,7 @@ function appendMessage(role, text, withCursor = false) {
   }
 
   content.appendChild(bubble);
-  wrap.appendChild(avatar);
+  if (role === "ai") wrap.appendChild(avatar);
   wrap.appendChild(content);
   messages.appendChild(wrap);
   scrollToBottom();
@@ -401,7 +437,9 @@ function appendMessage(role, text, withCursor = false) {
 }
 
 function scrollToBottom() {
-  messages.scrollTop = messages.scrollHeight;
+  if (chatScrollContainer) {
+    chatScrollContainer.scrollTop = chatScrollContainer.scrollHeight;
+  }
 }
 
 
@@ -410,7 +448,7 @@ function scrollToBottom() {
 // ═══════════════════════════════════════════════════════════════════
 function renderSources(sources) {
   sourcesPanel.hidden = false;
-  sourcesCount.textContent = `${sources.length} source excerpt${sources.length !== 1 ? "s" : ""} used`;
+  sourcesCount.textContent = `${sources.length} source passage${sources.length !== 1 ? "s" : ""} retrieved`;
 
   sourcesList.innerHTML = sources
     .map(s => `
@@ -429,44 +467,41 @@ sourcesToggle.addEventListener("click", () => {
 
 
 // ═══════════════════════════════════════════════════════════════════
-// Markdown Renderer (robust, sanitizing, multi-block parser)
+// Markdown Renderer
 // ═══════════════════════════════════════════════════════════════════
 function renderMarkdown(raw) {
   if (!raw) return "";
 
-  // 1. First escape HTML special chars to prevent XSS
   let text = escapeHtml(raw);
 
-  // 2. Fenced code blocks ```lang ... ```
+  // Fenced code blocks
   text = text.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
     return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
   });
 
-  // 3. Inline code `code`
+  // Inline code
   text = text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
 
-  // 4. Headings
+  // Headings
   text = text.replace(/^### (.*$)/gim, "<h3>$1</h3>");
   text = text.replace(/^## (.*$)/gim, "<h2>$1</h2>");
   text = text.replace(/^# (.*$)/gim, "<h1>$1</h1>");
 
-  // 5. Bold & Italic
+  // Bold & Italic
   text = text.replace(/\*\*\*(.*?)\*\*\*/g, "<strong><em>$1</em></strong>");
   text = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
   text = text.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
 
-  // 6. Split into blocks separated by double newlines
+  // Paragraphs & Lists
   const blocks = text.split(/\n{2,}/);
   const formattedBlocks = blocks.map(block => {
     block = block.trim();
     if (!block) return "";
 
-    // If block is already a tag like <pre> or <h*>, don't wrap in <p>
     if (/^<(pre|h1|h2|h3|table)/i.test(block)) {
       return block;
     }
 
-    // Check for bullet lists (lines starting with - or *)
     const lines = block.split("\n");
     const isBulletList = lines.every(l => /^[\s]*[-•*]\s+/.test(l));
     if (isBulletList && lines.length > 0) {
@@ -474,14 +509,12 @@ function renderMarkdown(raw) {
       return `<ul>${items}</ul>`;
     }
 
-    // Check for numbered lists (lines starting with 1. 2. etc)
     const isNumberedList = lines.every(l => /^[\s]*\d+\.\s+/.test(l));
     if (isNumberedList && lines.length > 0) {
       const items = lines.map(l => `<li>${l.replace(/^[\s]*\d+\.\s+/, "")}</li>`).join("");
       return `<ol>${items}</ol>`;
     }
 
-    // Standard paragraph with soft breaks
     return `<p>${lines.join("<br>")}</p>`;
   });
 
@@ -500,7 +533,7 @@ function escapeHtml(str) {
 // ═══════════════════════════════════════════════════════════════════
 // Toast Notifications
 // ═══════════════════════════════════════════════════════════════════
-function showToast(message, type = "info", duration = 4000) {
+function showToast(message, type = "info", duration = 3500) {
   const existing = document.querySelector(".toast");
   if (existing) existing.remove();
 
@@ -517,9 +550,9 @@ function showToast(message, type = "info", duration = 4000) {
   document.body.appendChild(toast);
 
   setTimeout(() => {
-    toast.style.transition = "opacity 300ms ease, transform 300ms ease";
+    toast.style.transition = "opacity 250ms ease, transform 250ms ease";
     toast.style.opacity    = "0";
-    toast.style.transform  = "translateY(10px)";
-    setTimeout(() => toast.remove(), 300);
+    toast.style.transform  = "translateY(8px)";
+    setTimeout(() => toast.remove(), 250);
   }, duration);
 }
